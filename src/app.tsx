@@ -27,6 +27,13 @@ interface TrackHistoryItem {
     isrc: string;
 }
 
+type ArtistAlbum = {
+    id: string;
+    name: string;
+    date: string;
+    albumType: string;
+};
+
 (async function allOfArtist(): Promise<void> {
     if (!(Spicetify.GraphQL && Spicetify.LocalStorage)) {
         setTimeout(allOfArtist, 300);
@@ -171,7 +178,7 @@ interface TrackHistoryItem {
         options: Record<string, string>,
         attributes: string,
     ): HTMLDivElement {
-        const val = CONFIG[name] as number;
+        const val = Object.keys(options).indexOf(String(CONFIG[name]));
         const container = document.createElement("div");
         container.classList.add("setting-row");
 
@@ -308,58 +315,170 @@ interface TrackHistoryItem {
         void makePlaylist_getTracks(uris);
     }
 
+    async function getArtistDiscography(artistId: string): Promise<ArtistAlbum[]> {
+        const discog: ArtistAlbum[] = [];
+        const seenAlbumIds = new Set<string>();
+        let offset = 0;
+        let hasNextPage = true;
+        const artistAlbumQuery = GraphQL.Definitions.queryArtistDiscographyAll;
+
+        while (hasNextPage) {
+            try {
+                const response: any = await GraphQL.Request(artistAlbumQuery, {
+                    uri: `spotify:artist:${artistId}`,
+                    offset,
+                    limit: 50,
+                });
+
+                const items =
+                    response?.data?.artistUnion?.discography?.all?.items ??
+                    response?.artistUnion?.discography?.all?.items ??
+                    [];
+
+                if (!items || items.length === 0) break;
+
+                for (const item of items) {
+                    const releases = item.releases?.items || [];
+                    for (const release of releases) {
+                        if (!release?.id || seenAlbumIds.has(release.id)) {
+                            continue;
+                        }
+                        discog.push({
+                            id: release.id,
+                            name: release.name,
+                            date:
+                                release.date?.isoString ||
+                                release.date?.year?.toString() ||
+                                "",
+                            albumType: release.type || "album",
+                        });
+                        seenAlbumIds.add(release.id);
+                    }
+                }
+
+                offset += 50;
+                hasNextPage = items.length === 50;
+            } catch (error) {
+                // Fallback to current partial discography if GraphQL fails
+                console.error("[AllOfArtist][ERROR] GraphQL artist discography failed:", error);
+                break;
+            }
+        }
+
+        discog.sort((a, b) => a.date.localeCompare(b.date));
+        return discog;
+    }
+
+    async function createPlaylistForArtist(
+        userId: string,
+        artistName: string,
+        description: string,
+    ): Promise<{ id: string; uri?: string }> {
+        const playlistName = `All Of ${artistName}`;
+        const platform: any = (Spicetify as any).Platform;
+
+        // Prefer modern PlaylistAPI if available
+        const playlistApi = platform?.PlaylistAPI;
+        if (playlistApi?.create) {
+            const created = await playlistApi.create(playlistName, {
+                description,
+                public: false,
+                collaborative: false,
+            });
+
+            const createdUri: string | undefined = created?.uri;
+            const createdId: string =
+                created?.id ?? (createdUri ? createdUri.split(":").pop() : undefined);
+
+            if (!createdId) {
+                throw new Error("Failed to create playlist: missing id");
+            }
+
+            return { id: createdId, uri: createdUri };
+        }
+
+        // Fallback: try RootlistAPI if exposed
+        const rootlistApi = platform?.RootlistAPI;
+        if (rootlistApi?.createPlaylist) {
+            const created = await rootlistApi.createPlaylist(playlistName, {
+                description,
+                public: false,
+                collaborative: false,
+            });
+
+            const createdUri: string | undefined = created?.uri;
+            const createdId: string =
+                created?.id ?? (createdUri ? createdUri.split(":").pop() : undefined);
+
+            if (!createdId) {
+                throw new Error("Failed to create playlist via RootlistAPI: missing id");
+            }
+
+            return { id: createdId, uri: createdUri };
+        }
+
+        throw new Error("No supported playlist creation API available");
+    }
+
+    async function updatePlaylistMetadata(
+        playlistIdOrUri: string,
+        metadata: { name?: string; description?: string },
+    ): Promise<void> {
+        const platform: any = (Spicetify as any).Platform;
+        const playlistApi = platform?.PlaylistAPI;
+
+        // Accept either raw id or full URI
+        const playlistUri = playlistIdOrUri.startsWith("spotify:playlist:")
+            ? playlistIdOrUri
+            : `spotify:playlist:${playlistIdOrUri}`;
+
+        if (playlistApi?.update) {
+            try {
+                await playlistApi.update(playlistUri, metadata);
+                return;
+            } catch (error) {
+                console.warn(
+                    "[AllOfArtist][WARN] PlaylistAPI.update failed, metadata may be stale:",
+                    error,
+                );
+                return;
+            }
+        }
+
+        // If no update API, fail silently – description is non-critical
+        console.warn(
+            "[AllOfArtist][WARN] No PlaylistAPI.update available; skipping playlist metadata update",
+        );
+    }
+
     async function makePlaylist_getTracks(uris: string[]): Promise<void> {
         const artistData = await getArtist(uris);
         const user: any = await GraphQL.Request(
             GraphQL.Definitions.me,
         );
         if (artistData.id !== "ERROR") {
-            let artistAlbumsRaw: any = await GraphQL.Request(
-                GraphQL.Definitions.getArtistAlbums,
-                { id: artistData.id, includeGroups: ["album", "single", "appears_on"], limit: 50, offset: 0 }
-            );
-            const total: number = artistAlbumsRaw.total;
+            const discography = await getArtistDiscography(artistData.id);
             const artistAlbums: [string, string, string][] = [];
 
-            while (artistAlbums.length <= total) {
-                for (let i = 0; i < artistAlbumsRaw.items.length; i++) {
-                    if (
-                        !(
-                            !CONFIG["addCompilations"] &&
-                            artistAlbumsRaw.items[i].album_type === "compilation"
-                        )
-                    ) {
-                        let tempDate: string = artistAlbumsRaw.items[i].release_date.replace(
-                            /-/g,
-                            "",
-                        );
-                        while (tempDate.length < 8) {
-                            tempDate += "0";
-                        }
-                        artistAlbums.push([
-                            tempDate,
-                            artistAlbumsRaw.items[i].id,
-                            artistAlbumsRaw.items[i].album_type,
-                        ]);
-                    }
+            for (const album of discography) {
+                if (!CONFIG["addCompilations"] && album.albumType === "compilation") {
+                    continue;
                 }
-                if (artistAlbumsRaw.next != null) {
-                    artistAlbumsRaw = await CosmosAsync.get(artistAlbumsRaw.next);
-                } else {
-                    break;
+
+                let tempDate: string = album.date.replace(/-/g, "");
+                while (tempDate.length < 8) {
+                    tempDate += "0";
                 }
+
+                artistAlbums.push([tempDate, album.id, album.albumType]);
             }
 
             artistAlbums.sort();
 
-            const newPlaylist: any = await CosmosAsync.post(
-                `https://api.spotify.com/v1/users/${user.id}/playlists`,
-                {
-                    name: `All Of ${artistData.name}`,
-                    description: `Creating All Of ${artistData.name}...`,
-                    public: false,
-                    collaborative: false,
-                },
+            const newPlaylist = await createPlaylistForArtist(
+                user.id,
+                artistData.name,
+                `Creating All Of ${artistData.name}...`,
             );
 
             await addFromAlbums(newPlaylist.id, artistData, artistAlbums, user);
@@ -373,12 +492,9 @@ interface TrackHistoryItem {
                 });
             }
 
-            await CosmosAsync.put(
-                `https://api.spotify.com/v1/playlists/${newPlaylist.id}`,
-                {
-                    description: `Playlist with all ${artistData.name} songs, generated by pl4neta's extenstion allOfArtist`,
-                },
-            );
+            await updatePlaylistMetadata(newPlaylist.id, {
+                description: `Playlist with all ${artistData.name} songs, generated by pl4neta's extenstion allOfArtist`,
+            });
         } else {
             Spicetify.showNotification(
                 `ERROR creating All Of ${artistData.name}`,
@@ -405,41 +521,39 @@ interface TrackHistoryItem {
         artistData: ArtistData,
         user: any,
     ): Promise<void> {
-        for (let i = 0; i < playlists[0].length; i++) {
-            await CosmosAsync.post(
-                `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
-                {
-                    uris: playlists[0][i],
-                },
-            );
+        const platform: any = (Spicetify as any).Platform;
+        const playlistApi = platform?.PlaylistAPI;
+
+        if (!playlistApi?.add) {
+            console.error("[AllOfArtist][ERROR] PlaylistAPI.add is not available");
+            return;
+        }
+
+        const mainPlaylistUri = `spotify:playlist:${playlistId}`;
+
+        // Add first chunk of tracks to the primary playlist
+        if (playlists[0] && playlists[0].length > 0) {
+            await playlistApi.add(mainPlaylistUri, playlists[0], { after: "end" });
         }
 
         if (playlists.length > 1) {
-            await CosmosAsync.put(
-                `https://api.spotify.com/v1/playlists/${playlistId}`,
-                {
-                    name: `All Of ${artistData.name} 1/${playlists.length}`,
-                },
-            );
+            await updatePlaylistMetadata(playlistId, {
+                name: `All Of ${artistData.name} 1/${playlists.length}`,
+            });
 
             for (let i = 1; i < playlists.length; i++) {
-                const newPlaylist: any = await CosmosAsync.post(
-                    `https://api.spotify.com/v1/users/${user.id}/playlists`,
-                    {
-                        name: `All Of ${artistData.name} ${i + 1}/${playlists.length}`,
-                        description: `Playlist with all ${artistData.name} songs, generated by pl4neta's extenstion allOfArtist`,
-                        public: false,
-                        collaborative: false,
-                    },
+                const newPlaylist = await createPlaylistForArtist(
+                    user.id,
+                    `${artistData.name} ${i + 1}/${playlists.length}`,
+                    `Playlist with all ${artistData.name} songs, generated by pl4neta's extenstion allOfArtist`,
                 );
 
-                for (let r = 0; r < playlists[i].length; r++) {
-                    await CosmosAsync.post(
-                        `https://api.spotify.com/v1/playlists/${newPlaylist.id}/tracks`,
-                        {
-                            uris: playlists[i][r],
-                        },
-                    );
+                const newPlaylistUri = newPlaylist.uri
+                    ? newPlaylist.uri
+                    : `spotify:playlist:${newPlaylist.id}`;
+
+                if (playlists[i] && playlists[i].length > 0) {
+                    await playlistApi.add(newPlaylistUri, playlists[i], { after: "end" });
                 }
             }
         }
@@ -456,93 +570,127 @@ interface TrackHistoryItem {
 
         let albumTracksAdd: string[] = [];
 
-        while (array.length > 0) {
-            const albums: any = await CosmosAsync.get(
-                `https://api.spotify.com/v1/albums?ids=${array
-                    .slice(0, 20)
-                    .map((inner) => inner[1])
-                    .join(",")}`,
-            );
-            array.splice(0, 20);
+        const albumTrackQuery = GraphQL.Definitions.queryAlbumTracks;
 
-            for (const album of albums.albums) {
-                let tracks: any = album.tracks;
-                do {
-                    for (let i = 0; i < tracks.items.length; i++) {
-                        const track = tracks.items[i];
+        for (const [, albumId, albumType] of array) {
+            let offset = 0;
+            const limit = 100;
+            let hasNextPage = true;
 
-                        if (!CONFIG["addFeatures"] && track.artists[0].id !== artistData.id)
-                            continue;
+            while (hasNextPage) {
+                const response: any = await GraphQL.Request(albumTrackQuery, {
+                    uri: `spotify:album:${albumId}`,
+                    offset,
+                    limit,
+                });
 
-                        const track_artists: string[] = [];
-                        for (let c = 0; c < track.artists.length; c++) {
-                            track_artists.push(track.artists[c].id);
+                const items =
+                    response?.data?.albumUnion?.tracksV2?.items ||
+                    response?.data?.albumUnion?.tracks?.items ||
+                    response?.albumUnion?.tracksV2?.items ||
+                    response?.albumUnion?.tracks?.items ||
+                    [];
+
+                if (!items || items.length === 0) break;
+
+                const totalTracks = items.length;
+
+                for (let i = 0; i < items.length; i++) {
+                    const raw = items[i];
+                    const track = raw.track ?? raw;
+
+                    if (!track) {
+                        continue;
+                    }
+
+                    const trackUri: string | undefined = track.uri;
+                    const trackId: string | undefined =
+                        track.id ?? (trackUri ? trackUri.split(":").pop() : undefined);
+
+                    if (!trackId || !trackUri) {
+                        continue;
+                    }
+
+                    const mainArtistId: string | undefined =
+                        track.artists?.[0]?.id ?? track.artist?.id;
+
+                    if (!CONFIG["addFeatures"] && mainArtistId !== artistData.id) {
+                        continue;
+                    }
+
+                    const track_artists: string[] = [];
+                    const artistsArray = track.artists ?? track.artist?.items ?? [];
+
+                    for (let c = 0; c < artistsArray.length; c++) {
+                        const artistId: string | undefined =
+                            artistsArray[c]?.id ?? artistsArray[c]?.uri?.split(":").pop();
+                        if (artistId) {
+                            track_artists.push(artistId);
                         }
+                    }
 
-                        if (track_artists.includes(artistData.id)) {
-                            if (CONFIG["removeDupes"]) {
-                                const track_data: any = await CosmosAsync.get(
-                                    `https://api.spotify.com/v1/tracks/${track.id}`,
-                                );
-                                const trackInfo: TrackHistoryItem = {
-                                    name: track_data.name,
-                                    uri: track_data.uri,
-                                    trackCount: tracks.total,
-                                    type: album.album_type,
-                                    index: `${tracksAdd.length}_${albumTracksAdd.length}`,
-                                    isrc: track_data.external_ids.isrc,
-                                };
+                    if (track_artists.includes(artistData.id)) {
+                        if (CONFIG["removeDupes"]) {
+                            const trackInfo: TrackHistoryItem = {
+                                name: track.name,
+                                uri: trackUri,
+                                trackCount: totalTracks,
+                                type: albumType,
+                                index: `${tracksAdd.length}_${albumTracksAdd.length}`,
+                                // GraphQL track responses may not expose ISRC directly;
+                                // fall back to using the track URI as a stable identifier.
+                                isrc: track.external_ids?.isrc ?? trackUri,
+                            };
 
-                                const playlist_tracks_index = await getIndexFrom2dArray(
-                                    track_history,
-                                    track_data.external_ids.isrc,
-                                );
+                            const playlist_tracks_index = await getIndexFrom2dArray(
+                                track_history,
+                                trackInfo.isrc,
+                            );
 
-                                if (playlist_tracks_index >= 0) {
-                                    if (
-                                        CONFIG["trackPriority"] === "trackCount" &&
-                                        album.album_type !== "compilation" &&
-                                        (track_history[playlist_tracks_index].type ===
-                                            "compilation" ||
-                                            (track_history[playlist_tracks_index].type !==
-                                                "compilation" &&
-                                                tracks.total >
+                            if (playlist_tracks_index >= 0) {
+                                if (
+                                    CONFIG["trackPriority"] === "trackCount" &&
+                                    albumType !== "compilation" &&
+                                    (track_history[playlist_tracks_index].type ===
+                                        "compilation" ||
+                                        (track_history[playlist_tracks_index].type !==
+                                            "compilation" &&
+                                            totalTracks >
                                                 track_history[playlist_tracks_index].trackCount))
-                                    ) {
-                                        const removeIndex =
-                                            track_history[playlist_tracks_index].index.split("_");
-                                        track_history.splice(playlist_tracks_index, 1, {} as any);
+                                ) {
+                                    const removeIndex =
+                                        track_history[playlist_tracks_index].index.split("_");
+                                    track_history.splice(playlist_tracks_index, 1, {} as any);
 
-                                        const index0 = Number(removeIndex[0]);
-                                        const index1 = Number(removeIndex[1]);
+                                    const index0 = Number(removeIndex[0]);
+                                    const index1 = Number(removeIndex[1]);
 
-                                        if (tracksAdd.length > index0) {
-                                            tracksAdd[index0].splice(index1, 1, "remove");
-                                        } else {
-                                            albumTracksAdd.splice(index1, 1, "remove");
-                                        }
-
-                                        track_history.push(trackInfo);
-                                        albumTracksAdd.push(trackInfo.uri);
+                                    if (tracksAdd.length > index0) {
+                                        tracksAdd[index0].splice(index1, 1, "remove");
+                                    } else {
+                                        albumTracksAdd.splice(index1, 1, "remove");
                                     }
-                                } else {
+
                                     track_history.push(trackInfo);
                                     albumTracksAdd.push(trackInfo.uri);
                                 }
                             } else {
-                                albumTracksAdd.push(track.uri);
+                                track_history.push(trackInfo);
+                                albumTracksAdd.push(trackInfo.uri);
                             }
+                        } else {
+                            albumTracksAdd.push(trackUri);
+                        }
 
-                            if (albumTracksAdd.length === 100) {
-                                tracksAdd.push(albumTracksAdd);
-                                albumTracksAdd = [];
-                            }
+                        if (albumTracksAdd.length === 100) {
+                            tracksAdd.push(albumTracksAdd);
+                            albumTracksAdd = [];
                         }
                     }
+                }
 
-                    if (!tracks.next) break;
-                    tracks = await CosmosAsync.get(tracks.next);
-                } while (true);
+                hasNextPage = items.length === limit;
+                offset += limit;
             }
         }
 
@@ -560,16 +708,16 @@ interface TrackHistoryItem {
 
         const playlists: string[][] = [];
         while (tracksAdd.length > 0) {
-            playlists.push(tracksAdd.slice(0, 100).flat());
+            const chunk = tracksAdd.slice(0, 100);
+            const flattened: string[] = ([] as string[]).concat(...chunk);
+            playlists.push(flattened);
             tracksAdd.splice(0, 100);
         }
 
         await addTracks(playlistId, playlists, artistData, user);
     }
 
-    async function shouldDisplayContextMenu(
-        uris: string[],
-    ): Promise<boolean> {
+    function shouldDisplayContextMenu(uris: string[]): boolean {
         if (uris.length > 1) {
             return false;
         }
