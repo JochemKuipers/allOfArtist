@@ -36,9 +36,13 @@ type ArtistAlbum = {
 
 (async function allOfArtist(): Promise<void> {
     if (!(Spicetify.GraphQL && Spicetify.LocalStorage)) {
+        // Spicetify not fully ready yet – try again shortly.
+        console.log("[AllOfArtist][DEBUG] Spicetify not ready, retrying...");
         setTimeout(allOfArtist, 300);
         return;
     }
+
+    console.log("[AllOfArtist][DEBUG] Extension bootstrap starting");
 
     const { GraphQL, URI } = Spicetify;
 
@@ -270,37 +274,67 @@ type ArtistAlbum = {
     settingsContent();
 
     async function getArtist(uris: string[]): Promise<ArtistData> {
-        const uri = uris[0].split(":");
-        const type = uri[1];
-        const id = uri[2];
+        console.log("[AllOfArtist][DEBUG] getArtist called with URIs:", uris);
+
+        const rawUri = uris[0];
+        const uriParts = rawUri.split(":");
+        const type = uriParts[1];
+        const id = uriParts[2];
+
+        console.log("[AllOfArtist][DEBUG] Parsed URI:", { type, id, raw: rawUri });
 
         const artistData: ArtistData = { id: "ERROR", name: "ERROR" };
 
         if (type === "artist") {
-            const res: any = await GraphQL.Request(
-                GraphQL.Definitions.getArtistNameAndTracks,
-                { id }
-            );
-            // Response structure may differ, adapt as necessary
-            if (res && res.artistUnion && res.artistUnion.name && res.artistUnion.id) {
-                artistData.id = res.artistUnion.id;
-                artistData.name = res.artistUnion.name;
+            const def = GraphQL.Definitions.queryArtistOverview;
+            console.log("[AllOfArtist][DEBUG] queryArtistOverview definition:", def);
+
+            try {
+                const res: any = await GraphQL.Request(def, { uri: rawUri });
+                console.log("[AllOfArtist][DEBUG] queryArtistOverview response:", res);
+
+                const artistUnion =
+                    res?.data?.artistUnion ??
+                    res?.artistUnion ??
+                    null;
+
+                const profile = artistUnion?.profile ?? {};
+                const name: string | undefined = profile.name;
+
+                if (artistUnion?.id && name) {
+                    artistData.id = artistUnion.id;
+                    artistData.name = name;
+                } else {
+                    console.warn(
+                        "[AllOfArtist][WARN] queryArtistOverview did not return id/name",
+                        artistUnion,
+                    );
+                }
+            } catch (error) {
+                console.error(
+                    "[AllOfArtist][ERROR] queryArtistOverview failed:",
+                    error,
+                );
             }
         } else if (type === "album") {
-            const res: any = await GraphQL.Request(
-                GraphQL.Definitions.getAlbumNameAndTracks,
-                { id }
-            );
+            const def = GraphQL.Definitions.getAlbumNameAndTracks;
+            console.log("[AllOfArtist][DEBUG] getAlbumNameAndTracks definition:", def);
+
+            const res: any = await GraphQL.Request(def, { id });
+
+            console.log("[AllOfArtist][DEBUG] getAlbumNameAndTracks response:", res);
             // Highly likely the response has an 'album' property with artist info
             if (res && res.album && res.album.artists && res.album.artists[0]) {
                 artistData.id = res.album.artists[0].id;
                 artistData.name = res.album.artists[0].name;
             }
         } else if (type === "track") {
-            const res: any = await GraphQL.Request(
-                GraphQL.Definitions.getTrack,
-                { id }
-            );
+            const def = GraphQL.Definitions.getTrack;
+            console.log("[AllOfArtist][DEBUG] getTrack definition:", def);
+
+            const res: any = await GraphQL.Request(def, { id });
+
+            console.log("[AllOfArtist][DEBUG] getTrack response:", res);
             // Assuming 'track' field has artists list
             if (res && res.track && res.track.artists && res.track.artists[0]) {
                 artistData.id = res.track.artists[0].id;
@@ -312,23 +346,43 @@ type ArtistAlbum = {
     }
 
     function createAllOf(uris: string[]): void {
+        console.log("[AllOfArtist][DEBUG] Create All Of Artist invoked with URIs:", uris);
         void makePlaylist_getTracks(uris);
     }
 
     async function getArtistDiscography(artistId: string): Promise<ArtistAlbum[]> {
+        console.log(
+            "[AllOfArtist][DEBUG] getArtistDiscography called for artistId:",
+            artistId,
+        );
+
         const discog: ArtistAlbum[] = [];
         const seenAlbumIds = new Set<string>();
         let offset = 0;
         let hasNextPage = true;
         const artistAlbumQuery = GraphQL.Definitions.queryArtistDiscographyAll;
+        console.log(
+            "[AllOfArtist][DEBUG] queryArtistDiscographyAll definition:",
+            artistAlbumQuery,
+        );
 
         while (hasNextPage) {
             try {
+                console.log(
+                    "[AllOfArtist][DEBUG] Requesting artist discography page",
+                    { artistId, offset, limit: 50 },
+                );
+
                 const response: any = await GraphQL.Request(artistAlbumQuery, {
                     uri: `spotify:artist:${artistId}`,
                     offset,
                     limit: 50,
                 });
+
+                console.log(
+                    "[AllOfArtist][DEBUG] Artist discography raw response:",
+                    response,
+                );
 
                 const items =
                     response?.data?.artistUnion?.discography?.all?.items ??
@@ -365,6 +419,12 @@ type ArtistAlbum = {
             }
         }
 
+        console.log(
+            "[AllOfArtist][DEBUG] Final discography size:",
+            discog.length,
+            "albums",
+        );
+
         discog.sort((a, b) => a.date.localeCompare(b.date));
         return discog;
     }
@@ -377,14 +437,23 @@ type ArtistAlbum = {
         const playlistName = `All Of ${artistName}`;
         const platform: any = (Spicetify as any).Platform;
 
+        console.log("[AllOfArtist][DEBUG] createPlaylistForArtist called", {
+            userId,
+            artistName,
+            playlistName,
+        });
+
         // Prefer modern PlaylistAPI if available
         const playlistApi = platform?.PlaylistAPI;
+        console.log("[AllOfArtist][DEBUG] PlaylistAPI presence:", !!playlistApi);
         if (playlistApi?.create) {
             const created = await playlistApi.create(playlistName, {
                 description,
                 public: false,
                 collaborative: false,
             });
+
+            console.log("[AllOfArtist][DEBUG] PlaylistAPI.create result:", created);
 
             const createdUri: string | undefined = created?.uri;
             const createdId: string =
@@ -399,12 +468,15 @@ type ArtistAlbum = {
 
         // Fallback: try RootlistAPI if exposed
         const rootlistApi = platform?.RootlistAPI;
+        console.log("[AllOfArtist][DEBUG] RootlistAPI presence:", !!rootlistApi);
         if (rootlistApi?.createPlaylist) {
             const created = await rootlistApi.createPlaylist(playlistName, {
                 description,
                 public: false,
                 collaborative: false,
             });
+
+            console.log("[AllOfArtist][DEBUG] RootlistAPI.createPlaylist result:", created);
 
             const createdUri: string | undefined = created?.uri;
             const createdId: string =
@@ -426,6 +498,12 @@ type ArtistAlbum = {
     ): Promise<void> {
         const platform: any = (Spicetify as any).Platform;
         const playlistApi = platform?.PlaylistAPI;
+
+        console.log("[AllOfArtist][DEBUG] updatePlaylistMetadata called", {
+            playlistIdOrUri,
+            metadata,
+            hasPlaylistApi: !!playlistApi,
+        });
 
         // Accept either raw id or full URI
         const playlistUri = playlistIdOrUri.startsWith("spotify:playlist:")
@@ -452,12 +530,22 @@ type ArtistAlbum = {
     }
 
     async function makePlaylist_getTracks(uris: string[]): Promise<void> {
+        console.log("[AllOfArtist][DEBUG] makePlaylist_getTracks start, URIs:", uris);
+
         const artistData = await getArtist(uris);
+        console.log("[AllOfArtist][DEBUG] Resolved artistData:", artistData);
+
         const user: any = await GraphQL.Request(
             GraphQL.Definitions.me,
         );
+        console.log("[AllOfArtist][DEBUG] Current user from GraphQL.me:", user);
+
         if (artistData.id !== "ERROR") {
             const discography = await getArtistDiscography(artistData.id);
+            console.log(
+                "[AllOfArtist][DEBUG] Discography albums for artist:",
+                discography.length,
+            );
             const artistAlbums: [string, string, string][] = [];
 
             for (const album of discography) {
@@ -475,10 +563,20 @@ type ArtistAlbum = {
 
             artistAlbums.sort();
 
+            console.log(
+                "[AllOfArtist][DEBUG] artistAlbums prepared (post-sort):",
+                artistAlbums.length,
+            );
+
             const newPlaylist = await createPlaylistForArtist(
                 user.id,
                 artistData.name,
                 `Creating All Of ${artistData.name}...`,
+            );
+
+            console.log(
+                "[AllOfArtist][DEBUG] Created playlist for artist:",
+                newPlaylist,
             );
 
             await addFromAlbums(newPlaylist.id, artistData, artistAlbums, user);
@@ -524,6 +622,13 @@ type ArtistAlbum = {
         const platform: any = (Spicetify as any).Platform;
         const playlistApi = platform?.PlaylistAPI;
 
+        console.log("[AllOfArtist][DEBUG] addTracks called", {
+            playlistId,
+            playlistsLength: playlists.length,
+            firstChunkSize: playlists[0]?.length ?? 0,
+            hasPlaylistApi: !!playlistApi,
+        });
+
         if (!playlistApi?.add) {
             console.error("[AllOfArtist][ERROR] PlaylistAPI.add is not available");
             return;
@@ -533,10 +638,22 @@ type ArtistAlbum = {
 
         // Add first chunk of tracks to the primary playlist
         if (playlists[0] && playlists[0].length > 0) {
+            console.log(
+                "[AllOfArtist][DEBUG] Adding first chunk of tracks to main playlist",
+                {
+                    mainPlaylistUri,
+                    chunkSize: playlists[0].length,
+                },
+            );
             await playlistApi.add(mainPlaylistUri, playlists[0], { after: "end" });
         }
 
         if (playlists.length > 1) {
+            console.log(
+                "[AllOfArtist][DEBUG] Multiple playlists required, total chunks:",
+                playlists.length,
+            );
+
             await updatePlaylistMetadata(playlistId, {
                 name: `All Of ${artistData.name} 1/${playlists.length}`,
             });
@@ -553,6 +670,14 @@ type ArtistAlbum = {
                     : `spotify:playlist:${newPlaylist.id}`;
 
                 if (playlists[i] && playlists[i].length > 0) {
+                    console.log(
+                        "[AllOfArtist][DEBUG] Adding chunk to overflow playlist",
+                        {
+                            index: i,
+                            playlistUri: newPlaylistUri,
+                            chunkSize: playlists[i].length,
+                        },
+                    );
                     await playlistApi.add(newPlaylistUri, playlists[i], { after: "end" });
                 }
             }
@@ -565,12 +690,22 @@ type ArtistAlbum = {
         array: [string, string, string][],
         user: any,
     ): Promise<void> {
+        console.log("[AllOfArtist][DEBUG] addFromAlbums called", {
+            playlistId,
+            artistId: artistData.id,
+            albumCount: array.length,
+        });
+
         const track_history: TrackHistoryItem[] = [];
         const tracksAdd: string[][] = [];
 
         let albumTracksAdd: string[] = [];
 
         const albumTrackQuery = GraphQL.Definitions.queryAlbumTracks;
+        console.log(
+            "[AllOfArtist][DEBUG] queryAlbumTracks definition:",
+            albumTrackQuery,
+        );
 
         for (const [, albumId, albumType] of array) {
             let offset = 0;
@@ -578,11 +713,21 @@ type ArtistAlbum = {
             let hasNextPage = true;
 
             while (hasNextPage) {
+                console.log(
+                    "[AllOfArtist][DEBUG] Requesting album tracks page",
+                    { albumId, offset, limit },
+                );
+
                 const response: any = await GraphQL.Request(albumTrackQuery, {
                     uri: `spotify:album:${albumId}`,
                     offset,
                     limit,
                 });
+
+                console.log(
+                    "[AllOfArtist][DEBUG] Album tracks raw response:",
+                    response,
+                );
 
                 const items =
                     response?.data?.albumUnion?.tracksV2?.items ||
@@ -591,7 +736,13 @@ type ArtistAlbum = {
                     response?.albumUnion?.tracks?.items ||
                     [];
 
-                if (!items || items.length === 0) break;
+                if (!items || items.length === 0) {
+                    console.log(
+                        "[AllOfArtist][DEBUG] No items in album tracks page, stopping for album",
+                        albumId,
+                    );
+                    break;
+                }
 
                 const totalTracks = items.length;
 
@@ -600,6 +751,10 @@ type ArtistAlbum = {
                     const track = raw.track ?? raw;
 
                     if (!track) {
+                        console.log(
+                            "[AllOfArtist][DEBUG] Skipping empty track entry in album",
+                            albumId,
+                        );
                         continue;
                     }
 
@@ -608,6 +763,10 @@ type ArtistAlbum = {
                         track.id ?? (trackUri ? trackUri.split(":").pop() : undefined);
 
                     if (!trackId || !trackUri) {
+                        console.log(
+                            "[AllOfArtist][DEBUG] Skipping track without id/uri",
+                            track,
+                        );
                         continue;
                     }
 
@@ -615,6 +774,14 @@ type ArtistAlbum = {
                         track.artists?.[0]?.id ?? track.artist?.id;
 
                     if (!CONFIG["addFeatures"] && mainArtistId !== artistData.id) {
+                        console.log(
+                            "[AllOfArtist][DEBUG] Skipping feature track",
+                            {
+                                trackId,
+                                mainArtistId,
+                                targetArtistId: artistData.id,
+                            },
+                        );
                         continue;
                     }
 
@@ -656,7 +823,7 @@ type ArtistAlbum = {
                                         (track_history[playlist_tracks_index].type !==
                                             "compilation" &&
                                             totalTracks >
-                                                track_history[playlist_tracks_index].trackCount))
+                                            track_history[playlist_tracks_index].trackCount))
                                 ) {
                                     const removeIndex =
                                         track_history[playlist_tracks_index].index.split("_");
