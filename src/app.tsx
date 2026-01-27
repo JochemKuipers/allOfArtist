@@ -430,7 +430,6 @@ type ArtistAlbum = {
     }
 
     async function createPlaylistForArtist(
-        userId: string,
         artistName: string,
         description: string,
     ): Promise<{ id: string; uri?: string }> {
@@ -438,7 +437,6 @@ type ArtistAlbum = {
         const platform: any = (Spicetify as any).Platform;
 
         console.log("[AllOfArtist][DEBUG] createPlaylistForArtist called", {
-            userId,
             artistName,
             playlistName,
         });
@@ -455,11 +453,23 @@ type ArtistAlbum = {
 
             console.log("[AllOfArtist][DEBUG] PlaylistAPI.create result:", created);
 
-            const createdUri: string | undefined = created?.uri;
-            const createdId: string =
-                created?.id ?? (createdUri ? createdUri.split(":").pop() : undefined);
+            let createdUri: string | undefined;
+            let createdId: string | undefined;
 
-            if (!createdId) {
+            if (typeof created === "string") {
+                createdUri = created;
+                createdId = created.split(":").pop();
+            } else {
+                createdUri = created?.uri;
+                createdId =
+                    created?.id ?? (createdUri ? createdUri.split(":").pop() : undefined);
+            }
+
+            if (!createdId && createdUri) {
+                createdId = createdUri.split(":").pop();
+            }
+
+            if (!createdId || !createdUri) {
                 throw new Error("Failed to create playlist: missing id");
             }
 
@@ -478,11 +488,23 @@ type ArtistAlbum = {
 
             console.log("[AllOfArtist][DEBUG] RootlistAPI.createPlaylist result:", created);
 
-            const createdUri: string | undefined = created?.uri;
-            const createdId: string =
-                created?.id ?? (createdUri ? createdUri.split(":").pop() : undefined);
+            let createdUri: string | undefined;
+            let createdId: string | undefined;
 
-            if (!createdId) {
+            if (typeof created === "string") {
+                createdUri = created;
+                createdId = created.split(":").pop();
+            } else {
+                createdUri = created?.uri;
+                createdId =
+                    created?.id ?? (createdUri ? createdUri.split(":").pop() : undefined);
+            }
+
+            if (!createdId && createdUri) {
+                createdId = createdUri.split(":").pop();
+            }
+
+            if (!createdId || !createdUri) {
                 throw new Error("Failed to create playlist via RootlistAPI: missing id");
             }
 
@@ -492,53 +514,11 @@ type ArtistAlbum = {
         throw new Error("No supported playlist creation API available");
     }
 
-    async function updatePlaylistMetadata(
-        playlistIdOrUri: string,
-        metadata: { name?: string; description?: string },
-    ): Promise<void> {
-        const platform: any = (Spicetify as any).Platform;
-        const playlistApi = platform?.PlaylistAPI;
-
-        console.log("[AllOfArtist][DEBUG] updatePlaylistMetadata called", {
-            playlistIdOrUri,
-            metadata,
-            hasPlaylistApi: !!playlistApi,
-        });
-
-        // Accept either raw id or full URI
-        const playlistUri = playlistIdOrUri.startsWith("spotify:playlist:")
-            ? playlistIdOrUri
-            : `spotify:playlist:${playlistIdOrUri}`;
-
-        if (playlistApi?.update) {
-            try {
-                await playlistApi.update(playlistUri, metadata);
-                return;
-            } catch (error) {
-                console.warn(
-                    "[AllOfArtist][WARN] PlaylistAPI.update failed, metadata may be stale:",
-                    error,
-                );
-                return;
-            }
-        }
-
-        // If no update API, fail silently – description is non-critical
-        console.warn(
-            "[AllOfArtist][WARN] No PlaylistAPI.update available; skipping playlist metadata update",
-        );
-    }
-
     async function makePlaylist_getTracks(uris: string[]): Promise<void> {
         console.log("[AllOfArtist][DEBUG] makePlaylist_getTracks start, URIs:", uris);
 
         const artistData = await getArtist(uris);
         console.log("[AllOfArtist][DEBUG] Resolved artistData:", artistData);
-
-        const user: any = await GraphQL.Request(
-            GraphQL.Definitions.me,
-        );
-        console.log("[AllOfArtist][DEBUG] Current user from GraphQL.me:", user);
 
         if (artistData.id !== "ERROR") {
             const discography = await getArtistDiscography(artistData.id);
@@ -569,7 +549,6 @@ type ArtistAlbum = {
             );
 
             const newPlaylist = await createPlaylistForArtist(
-                user.id,
                 artistData.name,
                 `Creating All Of ${artistData.name}...`,
             );
@@ -579,7 +558,7 @@ type ArtistAlbum = {
                 newPlaylist,
             );
 
-            await addFromAlbums(newPlaylist.id, artistData, artistAlbums, user);
+            await addFromAlbums(newPlaylist.id, artistData, artistAlbums);
 
             if (CONFIG["inAppNotification"] === "subtle") {
                 Spicetify.showNotification(`All Of ${artistData.name} created.`);
@@ -589,10 +568,6 @@ type ArtistAlbum = {
                     content: `All Of ${artistData.name} created.`,
                 });
             }
-
-            await updatePlaylistMetadata(newPlaylist.id, {
-                description: `Playlist with all ${artistData.name} songs, generated by pl4neta's extenstion allOfArtist`,
-            });
         } else {
             Spicetify.showNotification(
                 `ERROR creating All Of ${artistData.name}`,
@@ -617,7 +592,6 @@ type ArtistAlbum = {
         playlistId: string,
         playlists: string[][],
         artistData: ArtistData,
-        user: any,
     ): Promise<void> {
         const platform: any = (Spicetify as any).Platform;
         const playlistApi = platform?.PlaylistAPI;
@@ -654,13 +628,8 @@ type ArtistAlbum = {
                 playlists.length,
             );
 
-            await updatePlaylistMetadata(playlistId, {
-                name: `All Of ${artistData.name} 1/${playlists.length}`,
-            });
-
             for (let i = 1; i < playlists.length; i++) {
                 const newPlaylist = await createPlaylistForArtist(
-                    user.id,
                     `${artistData.name} ${i + 1}/${playlists.length}`,
                     `Playlist with all ${artistData.name} songs, generated by pl4neta's extenstion allOfArtist`,
                 );
@@ -688,14 +657,7 @@ type ArtistAlbum = {
         playlistId: string,
         artistData: ArtistData,
         array: [string, string, string][],
-        user: any,
     ): Promise<void> {
-        console.log("[AllOfArtist][DEBUG] addFromAlbums called", {
-            playlistId,
-            artistId: artistData.id,
-            albumCount: array.length,
-        });
-
         const track_history: TrackHistoryItem[] = [];
         const tracksAdd: string[][] = [];
 
@@ -706,6 +668,15 @@ type ArtistAlbum = {
             "[AllOfArtist][DEBUG] queryAlbumTracks definition:",
             albumTrackQuery,
         );
+
+        console.log("[AllOfArtist][DEBUG] addFromAlbums called", {
+            playlistId,
+            artistId: artistData.id,
+            albumCount: array.length,
+        });
+
+        let totalCandidateTracks = 0;
+        let totalAcceptedTracks = 0;
 
         for (const [, albumId, albumType] of array) {
             let offset = 0;
@@ -770,8 +741,17 @@ type ArtistAlbum = {
                         continue;
                     }
 
+                    // Resolve main artist id from various possible shapes
+                    const mainArtistObj =
+                        track.artists?.items?.[0] ??
+                        track.artists?.[0] ??
+                        track.artist ??
+                        null;
                     const mainArtistId: string | undefined =
-                        track.artists?.[0]?.id ?? track.artist?.id;
+                        mainArtistObj?.id ??
+                        (typeof mainArtistObj?.uri === "string"
+                            ? mainArtistObj.uri.split(":").pop()
+                            : undefined);
 
                     if (!CONFIG["addFeatures"] && mainArtistId !== artistData.id) {
                         console.log(
@@ -786,15 +766,24 @@ type ArtistAlbum = {
                     }
 
                     const track_artists: string[] = [];
-                    const artistsArray = track.artists ?? track.artist?.items ?? [];
+                    const artistsArrayRaw =
+                        track.artists?.items ?? track.artists ?? track.artist?.items ?? [];
+                    const artistsArray: any[] = Array.isArray(artistsArrayRaw)
+                        ? artistsArrayRaw
+                        : [];
 
                     for (let c = 0; c < artistsArray.length; c++) {
                         const artistId: string | undefined =
-                            artistsArray[c]?.id ?? artistsArray[c]?.uri?.split(":").pop();
+                            artistsArray[c]?.id ??
+                            (typeof artistsArray[c]?.uri === "string"
+                                ? artistsArray[c].uri.split(":").pop()
+                                : undefined);
                         if (artistId) {
                             track_artists.push(artistId);
                         }
                     }
+
+                    totalCandidateTracks += 1;
 
                     if (track_artists.includes(artistData.id)) {
                         if (CONFIG["removeDupes"]) {
@@ -847,6 +836,7 @@ type ArtistAlbum = {
                             }
                         } else {
                             albumTracksAdd.push(trackUri);
+                            totalAcceptedTracks += 1;
                         }
 
                         if (albumTracksAdd.length === 100) {
@@ -881,7 +871,14 @@ type ArtistAlbum = {
             tracksAdd.splice(0, 100);
         }
 
-        await addTracks(playlistId, playlists, artistData, user);
+        console.log("[AllOfArtist][DEBUG] addFromAlbums finished", {
+            totalCandidateTracks,
+            totalAcceptedTracks,
+            trackHistorySize: track_history.length,
+            tracksAddBatches: playlists.length,
+        });
+
+        await addTracks(playlistId, playlists, artistData);
     }
 
     function shouldDisplayContextMenu(uris: string[]): boolean {
