@@ -1,66 +1,20 @@
-# All Of Artist
-[Spicetify](https://github.com/khanhas/spicetify-cli) extension to create a playlist with all the tracks of an artist
+# Warning
 
-## Install
-### Through [marketplace](https://github.com/spicetify/spicetify-marketplace)
-In Extensions, search for 'All Of Artist' and install it.
+This project is deprecated and should not be used for bundling spicetify extensions or custom apps. Please use [`esbuild`](https://esbuild.github.io/), [`Bun's bundler`](https://bun.com/docs/bundler), [`Rollup`](https://rollupjs.org/) or [`webpack`](https://webpack.js.org/)/[`rspack`](https://rspack.rs/) with your own config. This project won't be receiving any more updates until further notice.
 
-### Manually
-Copy `allOfArtist.js` into your [Spicetify](https://github.com/khanhas/spicetify-cli) extensions directory:
-| **Platform**   | **Path**                                                                             |
-|----------------|--------------------------------------------------------------------------------------|
-| **Linux**      | `~/.config/spicetify/Extensions` or `$XDG_CONFIG_HOME/.config/spicetify/Extensions/` |
-| **MacOS**      | `~/spicetify_data/Extensions` or `$SPICETIFY_CONFIG/Extensions`                      |
-| **Windows**    | `%appdata%\spicetify\Extensions\`                                                    |
+# Spicetify Creator
 
-After putting the extension file into the correct folder, run the following command to install the extension:
+Spicetify Creator is a tool to compile modern Typescript/Javascript code to Spicetify extensions and custom apps.
 
-```sh
-spicetify config extensions allOfArtist.js
-spicetify apply
-```
+## Features
+- Typescript and React syntax
+- Import node packages
+- CSS/SCSS with PostCSS support
+- Extremely fast compile time with esbuild.
+- Plugins
 
-Or you can manually edit your `config-xpui.ini` file. Add your desired extension filenames in the extensions key, separated them by the | character:
+## Docs
+Check out [Spicetify's docs](https://spicetify.app/docs/development/spicetify-creator/the-basics)!
 
-```ini
-[AdditionalOptions]
-...
-extensions = foo.js|bar.js|allOfArtist.js
-```
-
-Then run:
-
-```sh
-spicetify apply
-```
-
-## Usage
-Right click an artist, track or album and you'll have an option to "Create All Of [Artist Name]"
-
-In the profile menu you'll se an item "All Of Artist" where you'll be able to tailor the extension to your needs:
-- Inclusion
-    - Include Features - Includes tracks from other artists where they're featured on;
-    - Include Compilations - Includes tracks from compilations;
-- Dupes
-    - Automatically Remove Dupes - Removes track dupes, dupes are defined by the "Track Priority" setting;
-    - Confirm Choices (work in progress) - Displays a list of all the tracks that'll be added and excluded from the playlist (dupes), allowing you to choose between track versions;
-    - Track Priority - Determines which tracks to prioritize when removing dupes;
-- Sorting
-    - Sort Order (work in progress) - Determines the order in which the tracks will be sorted.
-
-<div>
-<img src='docs/menu.png' width=400><br>
-<img src='docs/notification.png' width=400><br>
-<img src='docs/settings.png' width=400>
-</div>
-
-## More
-
-If you find any bugs, please [create a new issue](https://github.com/Pl4neta/allOfArtist/issues/new) on the GitHub repo.
-To better assess the issue please provide:
-  - The spicetify's version,
-  - All extensions installed besides allOfArtist,
-  - And if the issue is related to some specific artists, provide those aswell.
-
-[![Github Stars Badge](https://img.shields.io/github/stars/Pl4neta/allOfArtist?logo=github&style=flat&color=yellow)](https://github.com/Pl4neta/allOfArtist/stargazers)
-[![Github Issues Badge](https://img.shields.io/github/issues/Pl4neta/allOfArtist?logo=github&style=flat&color=green)](https://github.com/Pl4neta/allOfArtist/issues)
+## Made with Spicetify Creator
+- https://github.com/spicetify/spicetify-creator
